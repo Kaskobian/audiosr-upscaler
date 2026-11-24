@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/hamster_256.png" width="128" alt="AudioSR Upscaler hamster"></p>
+<p align="center"><img src="assets/hamster.gif" width="196" alt="AudioSR Upscaler hamster"></p>
 
 # AudioSR Upscaler
 
