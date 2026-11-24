@@ -1,0 +1,59 @@
+<!--
+  AudioSR Upscaler installer (WiX 5). Build with installer\build.ps1.
+  Installs the PyInstaller folder to C:\Program Files\AudioSR, adds Start menu and desktop
+  shortcuts, and registers an uninstaller in Settings > Apps.
+  Keep UpgradeCode fixed forever; raise Version for each release so it upgrades in place.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="AudioSR Upscaler"
+           Manufacturer="AudioSR Upscaler"
+           Version="$(var.Version)"
+           UpgradeCode="{4D2F6190-03D2-4E54-A6BD-353387C1B996}"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AudioSR Upscaler is already installed." />
+
+    <!-- The app is ~4.5 GB and a single cabinet can't exceed 2 GB, so the files go into
+         several external .cab files that must ship next to the .msi. -->
+    <MediaTemplate EmbedCab="no" MaximumUncompressedMediaSize="1000" CompressionLevel="high" />
+
+    <Icon Id="AppIcon" SourceFile="$(var.Assets)\hamster.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/haoheliu/versatile_audio_super_resolution" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="AudioSR">
+        <Files Include="!(bindpath.App)\**" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="AudioSR Upscaler"
+                  Description="AI audio super-resolution and reference remastering"
+                  Target="[INSTALLFOLDER]AudioSR_Upscaler.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon">
+          <!-- matches the ID the app sets, so taskbar pins use this shortcut's icon -->
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="AudioSR.Upscaler" />
+        </Shortcut>
+        <RegistryValue Root="HKLM" Key="Software\AudioSR Upscaler" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut">
+        <Shortcut Id="DesktopShortcut"
+                  Name="AudioSR Upscaler"
+                  Description="AI audio super-resolution and reference remastering"
+                  Target="[INSTALLFOLDER]AudioSR_Upscaler.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="HKLM" Key="Software\AudioSR Upscaler" Name="DesktopShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>

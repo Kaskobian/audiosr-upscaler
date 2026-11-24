@@ -1,0 +1,25 @@
+<!--
+  Single-file setup: AudioSR-Upscaler-Setup-<version>.exe with the MSI and all its .cab files
+  embedded. Shows the standard install window (Install button, progress, Close) and asks for
+  admin rights once. Built by installer\build.ps1 after the MSI.
+  Keep this UpgradeCode fixed forever (it is different from the MSI's on purpose).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="AudioSR Upscaler"
+          Version="$(var.Version)"
+          Manufacturer="AudioSR Upscaler"
+          UpgradeCode="{6B911B5A-4209-4E66-B68F-4389FB9EAD1B}"
+          IconSourceFile="$(var.Assets)\hamster.ico">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
+                                              LicenseUrl=""
+                                              LogoFile="$(var.Assets)\hamster_64.png"
+                                              SuppressOptionsUI="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <!-- Compressed="yes" packs the MSI and its external cabinets into this .exe. -->
+      <MsiPackage SourceFile="$(var.Msi)" Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

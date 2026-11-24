@@ -1,0 +1,18 @@
+# build outputs (the setup.exe goes to GitHub Releases, not git)
+build/
+dist/
+installer/out/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# local test material and results
+*.npy
+*.wav
+*.flac
+*.mp3
+*.m4a
