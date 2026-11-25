@@ -43,6 +43,9 @@ MODELS = {
 }
 MODEL_REPOS = {"basic": "haoheliu/audiosr_basic", "speech": "haoheliu/audiosr_speech"}
 DEVICE_CHOICES = {"Auto": "auto", "GPU (CUDA)": "cuda", "CPU": "cpu"}
+# Manual cutoff for heavily re-encoded/recovered files whose top end is metallic or swishy
+# codec noise that the detector would take for real highs (and then skip or keep).
+CUTOFF_CHOICES = {"Auto (detect)": None, **{f"{k} kHz": k * 1000 for k in (18, 16, 15, 14, 13, 12, 11, 10, 8, 6, 4)}}
 HALF = ("sampling", "decode", "vocoder")
 # (bf16 stages, piece length in seconds; None = as long as VRAM allows).
 # Measured on a 30 s music test: 10.24 s pieces restored the highs best (AudioSR was trained
@@ -307,12 +310,20 @@ class App:
         field(1, 1, "Guidance", ttk.Spinbox(settings, from_=1.0, to=10.0, increment=0.5,
                                             textvariable=self.guidance_var, width=6))
         field(1, 2, "Seed", ttk.Spinbox(settings, from_=0, to=999999, textvariable=self.seed_var, width=8))
+        self.cutoff_var = tk.StringVar(value=next(iter(CUTOFF_CHOICES)))
+        field(2, 0, "Rebuild above", ttk.Combobox(settings, textvariable=self.cutoff_var,
+                                                  values=list(CUTOFF_CHOICES), state="readonly", width=15))
+        ttk.Label(settings, style="Key.TLabel", wraplength=470, justify="left",
+                  text="Auto keeps everything the source really has. For heavily re-encoded files whose "
+                       "top end is harsh or swishy noise, pick a frequency: everything above it is "
+                       "discarded and rebuilt cleanly.").grid(row=5, column=1, columnspan=2, sticky="w")
         self.seamless_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(settings, text="Seamless joins: each piece continues the previous one's generated "
                                        "highs (smoother, slightly less literal)",
-                        variable=self.seamless_var).grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+                        variable=self.seamless_var).grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
         for var in (self.device_var, self.speed_var):
             var.trace_add("write", lambda *_: self.refresh_device())
+        self.cutoff_var.trace_add("write", lambda *_: self.refresh_input_info())
         self.model_var.trace_add("write", lambda *_: self.apply_model_preset())
         self.apply_model_preset()
 
@@ -473,6 +484,21 @@ class App:
             label.configure(style="Warn.TLabel" if self.engine["cuda"] else "Val.TLabel")
         self.refresh_input_info()
 
+    def detected_cutoff(self, path):
+        """Where the source's real content ends (Hz), measured once per file version."""
+        try:
+            key = (path, os.path.getmtime(path))
+        except OSError:
+            return None
+        cache = self.__dict__.setdefault("_cutoff_cache", {})
+        if key not in cache:
+            try:
+                audio, sr = engine.read_audio(path)
+                cache[key] = engine.detect_bandwidth(audio.mean(axis=1), sr)
+            except Exception:
+                cache[key] = None
+        return cache[key]
+
     def refresh_input_info(self):
         path = self.input_var.get().strip()
         self.input_info = None
@@ -491,6 +517,17 @@ class App:
         kind = ext.lstrip(".").upper() + (" (lossy)" if ext in engine.LOSSY_EXTS else "")
         ch = "mono" if channels == 1 else "stereo" if channels == 2 else f"{channels} ch"
         text = f"{fmt_time(duration)}  ·  {sr / 1000:g} kHz  ·  {ch}  ·  {kind}"
+        manual = CUTOFF_CHOICES[self.cutoff_var.get()]
+        if manual:
+            text += f"  ·  rebuilding everything above {manual / 1000:g} kHz"
+        else:
+            detected = self.detected_cutoff(path)
+            if detected is None:
+                pass
+            elif detected >= engine.OUT_SR / 2 - 200:
+                text += "  ·  looks full-band, AI will be skipped (set Rebuild above if the top is noise)"
+            else:
+                text += f"  ·  real highs up to {detected / 1000:.1f} kHz"
         self.stereo_box.state(["disabled"] if channels == 1 else ["!disabled"])
         if self.engine:
             chunk = self.chunk_seconds()
@@ -594,6 +631,7 @@ class App:
             job = dict(input=in_path, output=out_path, duration=self.input_info[0],
                        reference=reference, strength=self.strength_var.get() / 100,
                        match_loudness=bool(self.loudness_var.get()), seamless=bool(self.seamless_var.get()),
+                       rebuild_above=CUTOFF_CHOICES[self.cutoff_var.get()],
                        model=MODELS[self.model_var.get()]["checkpoint"], device=self.resolved_device(),
                        half=self.half_stages(), stereo=engine.STEREO_MODES[self.stereo_var.get()],
                        lossy=os.path.splitext(in_path)[1].lower() in engine.LOSSY_EXTS,
@@ -664,7 +702,12 @@ class App:
                 raise Cancelled()
             self.post("stage", "Reading audio...", os.path.basename(job["input"]))
             audio, sr = engine.read_audio(job["input"])
-            bandwidth = engine.detect_bandwidth(audio.mean(axis=1), sr)
+            if job["rebuild_above"]:
+                bandwidth = min(job["rebuild_above"], sr / 2)
+                self.post("log", f"Manual cutoff: discarding everything above {bandwidth / 1000:g} kHz "
+                                 f"(including any codec noise) and rebuilding it")
+            else:
+                bandwidth = engine.detect_bandwidth(audio.mean(axis=1), sr)
             if bandwidth >= engine.OUT_SR / 2 - 200:
                 self.post("log", "Source already has content up to 24 kHz; skipping AudioSR.")
             else:
@@ -681,7 +724,7 @@ class App:
                     result, info = engine.upscale(
                         audio, sr, run_model, stereo_mode=job["stereo"], lossy=job["lossy"],
                         chunk_seconds=chunk, overlap_seconds=OVERLAP_SECONDS, bandwidth=bandwidth,
-                        align=LATENT_HOP,
+                        align=LATENT_HOP, rebuild_above=job["rebuild_above"],
                         on_progress=lambda i, n, label: self.post("run", i, n, label),
                         should_cancel=self.cancel_event.is_set)
                     break
@@ -880,6 +923,9 @@ def run_batch(argv):
     p.add_argument("--steps", type=int, default=50)
     p.add_argument("--mode", default=next(iter(MODES)), choices=list(MODES))
     p.add_argument("--device", default="Auto", choices=list(DEVICE_CHOICES))
+    p.add_argument("--cutoff", default="auto",
+                   choices=["auto"] + [k.split()[0] for k in CUTOFF_CHOICES if CUTOFF_CHOICES[k]],
+                   help="kHz to rebuild above (for noisy, re-encoded top ends); default: detect")
     p.add_argument("--log", default=None)
     a = p.parse_args(argv)
     ext = os.path.splitext(a.output)[1].lower()
@@ -903,6 +949,7 @@ def run_batch(argv):
             app.model_var.set(a.model)
             app.speed_var.set(a.mode)
             app.device_var.set(a.device)
+            app.cutoff_var.set(next(iter(CUTOFF_CHOICES)) if a.cutoff == "auto" else f"{a.cutoff} kHz")
             app.steps_var.set(a.steps)
             app.start()
             state["started"] = True

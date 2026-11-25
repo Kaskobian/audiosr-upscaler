@@ -30,6 +30,10 @@ it downloads that model's weights from Hugging Face (5.75 GB each).
   *continues* the previous one's generated highs (diffusion inpainting), so there are no joins.
 - **Keeps your audio:** detects where the source was actually cut off and keeps everything below
   that untouched; the AI only fills in what is missing, with a natural high-frequency roll-off.
+- **Manual cutoff ("Rebuild above"):** heavily re-encoded or recovered MP3s often have metallic or
+  swishy codec noise up to 16–20 kHz that looks like real highs. Pick a frequency (e.g. 12 kHz)
+  and everything above it is cleanly filtered out and rebuilt, instead of being kept or skipped.
+  Batch mode: `--cutoff 12`.
 - **Reference remaster:** match a reference track's tonal balance, stereo width and loudness
   (LUFS), with a strength slider and a safety limiter.
 - **Formats:** WAV, FLAC, MP3, M4A in and out (24-bit WAV/FLAC, 320 kbps MP3, 256 kbps AAC).

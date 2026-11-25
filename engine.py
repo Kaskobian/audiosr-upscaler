@@ -251,12 +251,15 @@ def crossfade_weights(length, fade_in, fade_out):
 # --- pipeline ----------------------------------------------------------------------
 def upscale(audio, sr, run_model, *, stereo_mode="ms", lossy=False, chunk_seconds=None,
             overlap_seconds=2.0, on_progress=None, should_cancel=None, bandwidth=None, align=1,
-            natural_highs=True):
+            natural_highs=True, rebuild_above=None):
     """audio [frames, channels] at sr -> ([frames48, channels], info).
 
     run_model(wav_path, carry_samples) must return the AudioSR output for that mono 48 kHz
     file; carry_samples is how much of its start repeats the previous piece (0 = new track).
     on_progress(run_index, run_count, label) is called before each model run.
+    rebuild_above (Hz): manual cutoff for files whose top end is codec noise (metallic,
+    swishy artifacts) that the detector would mistake for real highs. Everything above it is
+    discarded and rebuilt by the model; the model's input is cleanly low-passed there.
     """
     if audio.shape[1] == 1 or stereo_mode == "mono":
         stereo_mode = "mono"
@@ -264,15 +267,18 @@ def upscale(audio, sr, run_model, *, stereo_mode="ms", lossy=False, chunk_second
     elif audio.shape[1] > 2:  # surround: fold down to stereo
         audio = np.stack([audio[:, 0::2].mean(1), audio[:, 1::2].mean(1)], axis=1)
 
-    if bandwidth is None:
+    if rebuild_above:
+        bandwidth = float(min(rebuild_above, sr / 2))
+    elif bandwidth is None:
         bandwidth = detect_bandwidth(audio.mean(axis=1), sr)
     x48 = to_48k(audio, sr)
     if bandwidth >= OUT_SR / 2 - 200:  # already full-band: nothing for the model to add
         out = x48 if stereo_mode != "mono" or x48.shape[1] == 1 else x48.mean(axis=1, keepdims=True)
         return out, dict(bandwidth=bandwidth, chunks=0, runs=0, stereo_mode=stereo_mode)
     # README tip: lossy codecs leave holes just under their cutoff that confuse the model.
-    # A clean low-pass at the detected bandwidth gives it the edge it was trained on.
-    model_in = to_48k(lowpass(audio, bandwidth * 0.98, sr), sr) if lossy else x48
+    # A clean low-pass at the cutoff gives it the edge it was trained on. With a manual cutoff
+    # this also strips the noise above it, so the model rebuilds that band from scratch.
+    model_in = to_48k(lowpass(audio, bandwidth * 0.98, sr), sr) if lossy or rebuild_above else x48
 
     if stereo_mode in ("ms", "ms_full"):
         mid, side = (x48[:, 0] + x48[:, 1]) / 2, (x48[:, 0] - x48[:, 1]) / 2
@@ -394,6 +400,34 @@ def _self_test():
     # below 14 kHz: outside both the shaped band (from ~15.7 kHz) and the 1/6-octave measuring window
     assert np.allclose(db_tamed[f < 14000], db_loud[f < 14000], atol=0.1), "shaping touched the real band"
     print(f"  roll-off shaping: top band {jump(db_loud):+.1f} dB -> {jump(db_tamed):+.1f} dB vs the band below")
+
+    # Manual cutoff: a recovered MP3 whose top end is swishy codec noise up to 20 kHz.
+    # Auto detection takes the noise for real highs; rebuild_above must throw it away.
+    hp = signal.butter(8, [16500, 19500], "band", fs=sr, output="sos")
+    swish = signal.sosfiltfilt(hp, rng.standard_normal(len(music))).astype(np.float32)
+    swish *= 0.15 * np.std(brickwall(music, 16000)) / np.std(swish)
+    noisy = (brickwall(music, 16000) + swish)[:, None]
+    fed = {}
+
+    def spy_model(path, carry=0):
+        x, _ = sf.read(path, dtype="float32")
+        f_in, p_in = signal.welch(x, OUT_SR, nperseg=4096)
+        fed["above"] = float(np.sum(p_in[f_in > 12600]) / np.sum(p_in))
+        return fake_model(path, carry)
+
+    swish48 = to_48k(swish[:, None], sr)[:, 0]
+    keep = signal.butter(8, [16800, 19200], "band", fs=OUT_SR, output="sos")
+    corr = lambda out: float(np.corrcoef(signal.sosfiltfilt(keep, out[:, 0]),  # noqa: E731
+                                         signal.sosfiltfilt(keep, swish48))[0, 1])
+    auto, auto_info = upscale(noisy, sr, spy_model, stereo_mode="mono")
+    manual, man_info = upscale(noisy, sr, spy_model, stereo_mode="mono", rebuild_above=12000)
+    assert auto_info["bandwidth"] > 18000, auto_info["bandwidth"]       # the failure mode
+    assert corr(auto) > 0.9, corr(auto)                                  # auto keeps the swish
+    assert man_info["bandwidth"] == 12000 and man_info["runs"] > 0
+    assert fed["above"] < 1e-4, fed["above"]                             # model saw a clean cut
+    assert abs(corr(manual)) < 0.1, corr(manual)                         # swish is gone
+    print(f"  manual cutoff: auto saw {auto_info['bandwidth'] / 1000:.1f} kHz and kept the noise "
+          f"(corr {corr(auto):.2f}); rebuild above 12 kHz removed it (corr {corr(manual):.2f})")
     print(f"self-test OK: {info['chunks']} chunks, bandwidth {info['bandwidth']:.0f} Hz, "
           f"low-band match {snr:.1f} dB")
 
